@@ -27,7 +27,7 @@ namespace DevilSwordDante
                         }
                         Common.MoveAlign(grabbedItem.transform, grabbedItem.holderPoint, component.lastHolder.slots[0]);
                         component.lastHolder.Snap(grabbedItem);
-                        EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(grabbedItem.transform, false);
+                        EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(grabbedItem.transform, null, false);
                         instance.SetIntensity(1);
                         instance.Play();
                     }
@@ -40,7 +40,7 @@ namespace DevilSwordDante
                         Holder holder = Player.local.creature.equipment.GetFirstFreeHolder();
                         Common.MoveAlign(grabbedItem.transform, grabbedItem.holderPoint, holder.slots[0]);
                         holder.Snap(grabbedItem);
-                        EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(grabbedItem.transform, false);
+                        EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(grabbedItem.transform, null, false);
                         instance.SetIntensity(1);
                         instance.Play();
                     }
@@ -67,7 +67,7 @@ namespace DevilSwordDante
                             }
                             Common.MoveAlign(item.gameObject.transform, item.GetMainHandle(spellCaster.ragdollHand.side).GetDefaultOrientation(spellCaster.ragdollHand.side).gameObject.transform, spellCaster.ragdollHand.gameObject.transform);
                             spellCaster.ragdollHand.Grab(item.GetMainHandle(spellCaster.ragdollHand.side), true);
-                            EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(item.transform, false);
+                            EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(item.transform, null, false);
                             instance.SetIntensity(1);
                             instance.Play();
                             exists = true;
@@ -79,7 +79,7 @@ namespace DevilSwordDante
                         Catalog.GetData<ItemData>("DevilSwordDante").SpawnAsync(item =>
                         {
                             spellCaster.ragdollHand.Grab(item.GetMainHandle(spellCaster.ragdollHand.side), true);
-                            EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(item.transform, false);
+                            EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(item.transform, null, false);
                             instance.SetIntensity(1);
                             instance.Play();
                         }, spellCaster.ragdollHand.grip.position, spellCaster.ragdollHand.grip.rotation, null, false);
@@ -109,29 +109,34 @@ namespace DevilSwordDante
     }
     public class BeamCustomization : MonoBehaviour
     {
-        Item item;
+        public Item item;
+        public Item sword;
+        public Creature user;
         public Color beamColor;
         public Color beamEmission;
         public Vector3 beamSize;
-        float despawnTime;
-        float beamSpeed;
-        float beamDamage;
-        bool dismember;
-        Vector3 beamScaleUpdate;
+        public float despawnTime;
+        public float beamSpeed;
+        public float beamDamage;
+        public bool dismember;
+        public Vector3 beamScaleUpdate;
         List<RagdollPart> parts = new List<RagdollPart>();
+        public Imbue imbue;
         public void Start()
         {
             item = GetComponent<Item>();
+            imbue = item.colliderGroups[0].imbue;
+            item.Despawn(despawnTime);
+            item.disallowDespawn = true;
             item.renderers[0].material.SetColor("_BaseColor", beamColor);
             item.renderers[0].material.SetColor("_EmissionColor", beamEmission * 2f);
             item.renderers[0].gameObject.transform.localScale = beamSize;
-            item.rb.useGravity = false;
-            item.rb.drag = 0;
-            item.rb.AddForce(Player.local.head.transform.forward * beamSpeed, ForceMode.Impulse);
+            item.mainCollisionHandler.ClearPhysicModifiers();
+            item.physicBody.useGravity = false;
+            item.physicBody.drag = 0;
             item.IgnoreRagdollCollision(Player.currentCreature.ragdoll);
             item.RefreshCollision(true);
             item.Throw();
-            item.Despawn(despawnTime);
         }
         public void Setup(bool beamDismember, float BeamSpeed, float BeamDespawn, float BeamDamage, Color color, Color emission, Vector3 size, Vector3 scaleUpdate)
         {
@@ -144,12 +149,9 @@ namespace DevilSwordDante
             beamSize = size;
             beamScaleUpdate = scaleUpdate;
         }
-        public void FixedUpdate()
-        {
-            item.gameObject.transform.localScale += beamScaleUpdate;
-        }
         public void Update()
         {
+            item.gameObject.transform.localScale += beamScaleUpdate * (Time.deltaTime * 100);
             if (parts.Count > 0)
             {
                 parts[0].gameObject.SetActive(true);
@@ -162,27 +164,72 @@ namespace DevilSwordDante
         }
         public void OnTriggerEnter(Collider c)
         {
-            if (c.GetComponentInParent<ColliderGroup>() != null)
+            if (c.GetComponentInParent<Breakable>() is Breakable breakable)
             {
-                ColliderGroup enemy = c.GetComponentInParent<ColliderGroup>();
-                if (enemy?.collisionHandler?.ragdollPart != null && enemy?.collisionHandler?.ragdollPart?.ragdoll?.creature != Player.currentCreature)
+                if (item.physicBody.velocity.sqrMagnitude < breakable.neededImpactForceToDamage)
+                    return;
+                float sqrMagnitude = item.physicBody.velocity.sqrMagnitude;
+                --breakable.hitsUntilBreak;
+                if (breakable.canInstantaneouslyBreak && sqrMagnitude >= breakable.instantaneousBreakVelocityThreshold)
+                    breakable.hitsUntilBreak = 0;
+                breakable.onTakeDamage?.Invoke(sqrMagnitude);
+                if (breakable.IsBroken || breakable.hitsUntilBreak > 0)
+                    return;
+                breakable.Break();
+            }
+            if (c.GetComponentInParent<ColliderGroup>() is ColliderGroup group && group.collisionHandler.isRagdollPart)
+            {
+                RagdollPart part = group.collisionHandler.ragdollPart;
+                if (part.ragdoll.creature != user && part.ragdoll.creature.gameObject.activeSelf == true && !part.isSliced)
                 {
-                    RagdollPart part = enemy.collisionHandler.ragdollPart;
-                    if (part.ragdoll.creature != Player.currentCreature && part?.ragdoll?.creature?.gameObject?.activeSelf == true && part != null && !part.isSliced)
+                    CollisionInstance instance = new CollisionInstance(new DamageStruct(DamageType.Slash, beamDamage))
                     {
-                        if (part.sliceAllowed && dismember)
+                        targetCollider = c,
+                        targetColliderGroup = group,
+                        sourceColliderGroup = item.colliderGroups[0],
+                        sourceCollider = item.colliderGroups[0].colliders[0],
+                        casterHand = sword?.lastHandler?.caster,
+                        impactVelocity = item.physicBody.velocity,
+                        contactPoint = c.transform.position,
+                        contactNormal = -item.physicBody.velocity
+                    };
+                    instance.damageStruct.penetration = DamageStruct.Penetration.None;
+                    instance.damageStruct.hitRagdollPart = part;
+                    if (part.sliceAllowed && !part.ragdoll.creature.isPlayer && dismember)
+                    {
+                        Vector3 direction = part.GetSliceDirection();
+                        float num1 = Vector3.Dot(direction, item.transform.up);
+                        float num2 = 1f / 3f;
+                        if (num1 < num2 && num1 > -num2 && !parts.Contains(part))
                         {
-                            if (!parts.Contains(part))
-                                parts.Add(part);
-                        }
-                        else if (!part.ragdoll.creature.isKilled)
-                        {
-                            CollisionInstance instance = new CollisionInstance(new DamageStruct(DamageType.Slash, beamDamage));
-                            instance.damageStruct.hitRagdollPart = part;
-                            part.ragdoll.creature.Damage(instance);
-                            part.ragdoll.creature.TryPush(Creature.PushType.Hit, item.rb.velocity, 1);
+                            parts.Add(part);
                         }
                     }
+                    if (imbue?.spellCastBase?.GetType() == typeof(SpellCastLightning))
+                    {
+                        part.ragdoll.creature.TryElectrocute(1, 2, true, true, (imbue.spellCastBase as SpellCastLightning).imbueHitRagdollEffectData);
+                        imbue.spellCastBase.OnImbueCollisionStart(instance);
+                    }
+                    if (imbue?.spellCastBase?.GetType() == typeof(SpellCastProjectile))
+                    {
+                        instance.damageStruct.damage *= 2;
+                        imbue.spellCastBase.OnImbueCollisionStart(instance);
+                    }
+                    if (imbue?.spellCastBase?.GetType() == typeof(SpellCastGravity))
+                    {
+                        imbue.spellCastBase.OnImbueCollisionStart(instance);
+                        part.ragdoll.creature.TryPush(Creature.PushType.Hit, item.physicBody.velocity, 3, part.type);
+                        part.physicBody.AddForce(item.physicBody.velocity, ForceMode.VelocityChange);
+                    }
+                    else
+                    {
+                        if (imbue?.spellCastBase != null && imbue.energy > 0)
+                        {
+                            imbue.spellCastBase.OnImbueCollisionStart(instance);
+                        }
+                        part.ragdoll.creature.TryPush(Creature.PushType.Hit, item.physicBody.velocity, 1, part.type);
+                    }
+                    part.ragdoll.creature.Damage(instance);
                 }
             }
         }
@@ -234,6 +281,8 @@ namespace DevilSwordDante
         bool ThumbstickDash;
         bool fallDamage;
         bool dashing;
+        bool right = false;
+        bool up = false;
         public void Start()
         {
             item = GetComponent<Item>();
@@ -278,7 +327,7 @@ namespace DevilSwordDante
 
         private void Item_OnGrabEvent(Handle handle, RagdollHand ragdollHand)
         {
-            item.rb.useGravity = true;
+            item.physicBody.useGravity = true;
             isThrown = false;
             startUpdate = false;
             spin = false;
@@ -294,8 +343,8 @@ namespace DevilSwordDante
                 Transform creature = GetEnemy()?.ragdoll?.targetPart?.transform;
                 if (creature != null)
                 {
-                    Vector3 velocity = item.rb.velocity;
-                    item.rb.velocity = (creature.position - item.transform.position).normalized * velocity.magnitude;
+                    Vector3 velocity = item.physicBody.velocity;
+                    item.physicBody.velocity = (creature.position - item.transform.position).normalized * velocity.magnitude;
                 }
             }
             if (active) ToggleActivate();
@@ -306,7 +355,7 @@ namespace DevilSwordDante
             if (active)
             {
                 animation.Play("Activate");
-                EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(item.transform, false);
+                EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(item.transform, null, false);
                 instance.SetIntensity(1);
                 instance.Play();
             }
@@ -330,11 +379,20 @@ namespace DevilSwordDante
             }
             if (action == Interactable.Action.UseStart && active)
             {
-                Vector3 v;
-                v.x = UnityEngine.Random.Range(-0.15f, 0.15f);
-                v.y = UnityEngine.Random.Range(-0.15f, 0.15f);
-                v.z = UnityEngine.Random.Range(-0.15f, 0.15f);
-                Catalog.GetData<ItemData>("DSDDaggers").SpawnAsync(ShootDagger, new Vector3(Player.local.head.transform.position.x + v.x, Player.local.head.transform.position.y + v.y, Player.local.head.transform.position.z + v.z), Player.local.head.transform.rotation);
+                right = !right;
+                if (!right) up = !up;
+                Catalog.GetData<ItemData>("DSDDaggers").SpawnAsync(ShootDagger,
+                    Player.local.head.cam.transform.position + ((right ? Player.local.head.cam.transform.right : -Player.local.head.cam.transform.right) * 0.4f) +
+                    (up ? Player.local.head.cam.transform.up * 0.25f : Vector3.zero),
+                    Player.local.head.cam.transform.rotation);
+                GameObject effect = new GameObject();
+                effect.transform.position = Player.local.head.cam.transform.position + (right ? Player.local.head.cam.transform.right : -Player.local.head.cam.transform.right) +
+                    (up ? Player.local.head.cam.transform.up * 0.5f : Vector3.zero);
+                effect.transform.rotation = Quaternion.identity;
+                EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(effect.transform, null, false);
+                instance.SetIntensity(1);
+                instance.Play();
+                Destroy(effect, 2);
             }
             if (action == Interactable.Action.UseStart)
             {
@@ -368,9 +426,9 @@ namespace DevilSwordDante
             if (DisableCollision)
             {
                 Player.local.locomotion.rb.detectCollisions = false;
-                item.rb.detectCollisions = false;
-                item.mainHandler.rb.detectCollisions = false;
-                item.mainHandler.otherHand.rb.detectCollisions = false;
+                item.physicBody.rigidBody.detectCollisions = false;
+                item.mainHandler.physicBody.rigidBody.detectCollisions = false;
+                item.mainHandler.otherHand.physicBody.rigidBody.detectCollisions = false;
             }
             yield return new WaitForSeconds(DashTime);
             if (DisableGravity)
@@ -378,9 +436,9 @@ namespace DevilSwordDante
             if (DisableCollision)
             {
                 Player.local.locomotion.rb.detectCollisions = true;
-                item.rb.detectCollisions = true;
-                item.mainHandler.rb.detectCollisions = true;
-                item.mainHandler.otherHand.rb.detectCollisions = true;
+                item.physicBody.rigidBody.detectCollisions = true;
+                item.mainHandler.physicBody.rigidBody.detectCollisions = true;
+                item.mainHandler.otherHand.physicBody.rigidBody.detectCollisions = true;
             }
             if (StopOnEnd) Player.local.locomotion.rb.velocity = Vector3.zero;
             Player.fallDamage = fallDamage;
@@ -390,14 +448,11 @@ namespace DevilSwordDante
         public void ShootDagger(Item spawnedItem)
         {
             Transform creature = GetEnemy()?.ragdoll?.targetPart?.transform;
-            EffectInstance instance = Catalog.GetData<EffectData>("DSDActivate").Spawn(spawnedItem.transform, false);
-            instance.SetIntensity(1);
-            instance.Play();
-            spawnedItem.rb.useGravity = false;
-            spawnedItem.rb.drag = 0;
+            spawnedItem.physicBody.useGravity = false;
+            spawnedItem.physicBody.drag = 0;
             if (creature != null)
-                spawnedItem.rb.AddForce((creature.position - spawnedItem.transform.position).normalized * 45f, ForceMode.Impulse);
-            else spawnedItem.rb.AddForce(Player.local.head.transform.forward * 45f, ForceMode.Impulse);
+                spawnedItem.physicBody.AddForce((creature.position - spawnedItem.transform.position).normalized * 45f, ForceMode.Impulse);
+            else spawnedItem.physicBody.AddForce(Player.local.head.transform.forward * 45f, ForceMode.Impulse);
             spawnedItem.RefreshCollision(true);
             spawnedItem.IgnoreRagdollCollision(Player.currentCreature.ragdoll);
             spawnedItem.IgnoreObjectCollision(item);
@@ -412,17 +467,15 @@ namespace DevilSwordDante
             if (Creature.allActive.Count <= 0) return null;
             foreach (Creature creature in Creature.allActive)
             {
-                if (creature != null && !creature.isPlayer && creature.ragdoll.isActiveAndEnabled && !creature.isKilled && Vector3.Dot(Player.local.head.transform.forward.normalized, (creature.transform.position - Player.local.transform.position).normalized) >= 0.75f && closestCreature == null &&
-                    Vector3.Distance(Player.local.transform.position, creature.transform.position) <= 25)
+                if (creature != null && !creature.isPlayer && creature.ragdoll.isActiveAndEnabled && !creature.isKilled && Vector3.Angle(Player.local.head.cam.transform.forward.normalized, (creature.ragdoll.targetPart.transform.position - Player.local.head.cam.transform.position).normalized) <= 20 && closestCreature == null &&
+                    Vector3.Distance(Player.local.transform.position, creature.ragdoll.targetPart.transform.position) <= 25)
                 {
                     closestCreature = creature;
                 }
-                else if (creature != null && !creature.isPlayer && creature.ragdoll.isActiveAndEnabled && !creature.isKilled && Vector3.Dot(Player.local.head.transform.forward.normalized, (creature.transform.position - Player.local.transform.position).normalized) >= 0.75f && closestCreature != null &&
-                    Vector3.Distance(Player.local.transform.position, creature.transform.position) <= 25)
+                else if (creature != null && !creature.isPlayer && creature.ragdoll.isActiveAndEnabled && !creature.isKilled && Vector3.Angle(Player.local.head.cam.transform.forward.normalized, (creature.ragdoll.targetPart.transform.position - Player.local.head.cam.transform.position).normalized) <= 20 && closestCreature != null &&
+                    Vector3.Distance(Player.local.transform.position, creature.ragdoll.targetPart.transform.position) <= 25)
                 {
-                    if (Vector3.Dot(Player.local.head.transform.forward.normalized, (creature.transform.position - Player.local.transform.position).normalized) >
-                    Vector3.Dot(Player.local.head.transform.forward.normalized, (closestCreature.transform.position - Player.local.transform.position).normalized))
-                        closestCreature = creature;
+                    if (Vector3.Distance(Player.local.head.cam.transform.position, creature.ragdoll.targetPart.transform.position) < Vector3.Distance(Player.local.head.cam.transform.position, closestCreature.ragdoll.targetPart.transform.position)) closestCreature = creature;
                 }
             }
             return closestCreature;
@@ -457,8 +510,8 @@ namespace DevilSwordDante
             if (item.isFlying && lastHandler != null && spin)
             {
                 item.flyDirRef.Rotate(new Vector3(0, RotationSpeed, 0) * Time.fixedDeltaTime);
-                item.rb.useGravity = false;
-                item.rb.AddForce(-(item.transform.position - lastHandler.transform.position).normalized * ReturnSpeed, ForceMode.Force);
+                item.physicBody.useGravity = false;
+                item.physicBody.AddForce(-(item.transform.position - lastHandler.transform.position).normalized * ReturnSpeed, ForceMode.Force);
                 item.IgnoreRagdollCollision(Player.local.creature.ragdoll);
                 isThrown = true;
                 startUpdate = true;
@@ -471,12 +524,12 @@ namespace DevilSwordDante
             else
             {
                 item.flyDirRef.localRotation = Quaternion.identity;
-                item.rb.useGravity = true;
+                item.physicBody.useGravity = true;
                 isThrown = false;
                 startUpdate = false;
                 spin = false;
             }
-            if (lastHandler != null && Vector3.Dot(item.rb.velocity.normalized, (item.transform.position - lastHandler.transform.position).normalized) < 0 &&
+            if (lastHandler != null && Vector3.Dot(item.physicBody.velocity.normalized, (item.transform.position - lastHandler.transform.position).normalized) < 0 &&
                 Vector3.Distance(item.GetMainHandle(lastHandler.side).transform.position, lastHandler.transform.position) <= 1 && !item.IsHanded() && isThrown && !item.isTelekinesisGrabbed &&
                 startUpdate)
             {
@@ -499,19 +552,30 @@ namespace DevilSwordDante
                 {
                     BackpackHolder.instance.StoreItem(item);
                 }
-                item.rb.useGravity = true;
+                item.physicBody.useGravity = true;
                 isThrown = false;
                 startUpdate = false;
             }
             if (active) item.colliderGroups[0].imbue.Transfer(spell, 100);
-            if (Time.time - cdH <= cooldown || !beam || item.rb.velocity.magnitude - Player.local.locomotion.rb.velocity.magnitude < swordSpeed)
+            if (Time.time - cdH <= cooldown || !beam || item.physicBody.velocity.magnitude - Player.local.locomotion.rb.velocity.magnitude < swordSpeed)
             {
                 return;
             }
             else
             {
-                cdH = Time.time;
-                Catalog.GetData<ItemData>("DSDBeam").SpawnAsync(null, item.flyDirRef.position, Quaternion.LookRotation(item.flyDirRef.forward, item.rb.velocity.normalized - Player.local.locomotion.rb.velocity.normalized));
+                cdH = Time.time; 
+                Catalog.GetData<ItemData>("DSDBeam").SpawnAsync(beam =>
+                {
+                    BeamCustomization beamCustomization = beam.GetComponent<BeamCustomization>();
+                    beamCustomization.sword = item;
+                    beamCustomization.user = item.mainHandler != null ? item.mainHandler?.creature : item.lastHandler?.creature;
+                    if (beamCustomization.user?.player != null) beam.physicBody.AddForce(Player.local.head.transform.forward * beamCustomization.beamSpeed, ForceMode.Impulse);
+                    else if (beamCustomization.user?.brain?.currentTarget is Creature target) beam.physicBody.AddForce(-(beam.transform.position - target.ragdoll.targetPart.transform.position).normalized * beamCustomization.beamSpeed, ForceMode.Impulse);
+                    else beam.physicBody.AddForce(beamCustomization.user.ragdoll.headPart.transform.forward * beamCustomization.beamSpeed, ForceMode.Impulse);
+                    beam.physicBody.angularVelocity = Vector3.zero;
+                    if (item.colliderGroups[0].imbue is Imbue imbue && imbue.spellCastBase != null && imbue.energy > 0)
+                        beam.colliderGroups[0].imbue.Transfer(imbue.spellCastBase, beam.colliderGroups[0].imbue.maxEnergy);
+                }, item.flyDirRef.position, Quaternion.LookRotation(item.flyDirRef.forward, item.physicBody.GetPointVelocity(item.flyDirRef.position).normalized));
             }
         }
         public IEnumerator Teleport(RagdollHand hand)
@@ -533,7 +597,7 @@ namespace DevilSwordDante
         public void Start()
         {
             item = GetComponent<Item>();
-            EffectInstance instance = Catalog.GetData<EffectData>("DSDFire").Spawn(item.transform, false);
+            EffectInstance instance = Catalog.GetData<EffectData>("DSDFire").Spawn(item.transform, null, false);
             instance.SetRenderer(item.renderers[0], false);
             instance.SetIntensity(1);
             instance.Play();
@@ -555,11 +619,9 @@ namespace DevilSwordDante
         {
             if (!item.IsHanded() && item.isFlying)
             {
-                //Quaternion deltaRotation = Quaternion.Euler(new Vector3(0, 0, 2160) * Time.fixedDeltaTime);
-                //item.rb.MoveRotation(item.rb.rotation * deltaRotation);
                 item.flyDirRef.Rotate(new Vector3(0, 0, 1080) * Time.fixedDeltaTime);
                 if (enemy != null)
-                    item.rb.AddForce((item.transform.position - enemy.ragdoll.targetPart.transform.position).normalized * 5, ForceMode.Force);
+                    item.physicBody.AddForce((item.transform.position - enemy.ragdoll.targetPart.transform.position).normalized * 5, ForceMode.Force);
             }
         }
         public void OnCollisionEnter(Collision c)
